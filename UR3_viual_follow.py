@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+import time
+import numpy as np
+import cv2
+import pyrealsense2 as rs
+import roslibpy
+
+# ------------------------- CAMERA + VISUAL SERVOING SETUP ------------------------- #
+
+def FuncLx(x, y, Z): #Computing the Image Jacobian for one image point
+    #Vc = [vx, vy, vz, wx, wy, wz]^T
+    # Image Feature Velocity [x dot, y dot] = [vx, vy, vz, wx, wy, wz]^T  * Lx
+    Lx = np.zeros((2, 6), dtype=float)
+    Lx[0, 0] = -1.0 / Z
+    Lx[0, 1] = 0.0
+    Lx[0, 2] = x / Z
+    Lx[0, 3] = x * y
+    Lx[0, 4] = -(1.0 + x**2)
+    Lx[0, 5] = y
+    Lx[1, 0] = 0.0
+    Lx[1, 1] = -1.0 / Z
+    Lx[1, 2] = y / Z
+    Lx[1, 3] = 1.0 + y**2
+    Lx[1, 4] = -x * y
+    Lx[1, 5] = -x
+    return Lx
+
+Z = 50.0 #Assumed constant depth of the target points in mm
+Lambda = 0.5 # Visual servoing gain
+
+Target = np.array([
+    [0.0,   0.0],
+    [800.0, 0.0],
+    [0.0, 800.0]
+], dtype=float)
+
+PATTERN_SIZE = (9, 6) # (cols, rows)
+
+RESOLUTION = (640, 480)
+FPS = 30
+
+# ----------Initialising the Intel RealSense coulor stream
+pipeline = rs.pipeline()
+config = rs.config()
+config.enable_stream(rs.stream.color, RESOLUTION[0], RESOLUTION[1], rs.format.bgr8, FPS)
+profile = pipeline.start(config)
+#----------------------------------------------------------
+
+color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile()
+intr = color_stream.get_intrinsics()
+fx, fy, cx, cy = intr.fx, intr.fy, intr.ppx, intr.ppy
+
+target_norm = np.empty((3, 2), float)
+target_norm[:, 0] = (Target[:, 0] - cx) / fx
+target_norm[:, 1] = (Target[:, 1] - cy) / fy #Normalised target feature coordinates
+
+Lx = np.vstack([FuncLx(target_norm[i, 0], target_norm[i, 1], Z) for i in range(3)])
+
+
+# ------------------------- ROS + ROBOT CONTROL SETUP ------------------------- #
+
+current_pos = None
+
+def joint_state_cb(message):
+    global current_pos
+    current_pos = list(message['position'])
+
+def send_velocity_step(client, velocity, duration=0.1, scale=0.01):
+    """
+    Convert 6x1 Cartesian velocity command into a small joint motion.
+    (Simplified for demo — uses proportional scaling.)
+    """
+
+# This is simplified — it just maps vx, vy, vz linearly to joint 1–3 positions.
+# In a real system, you’d either:
+
+# - Use inverse kinematics, or
+
+# - Use UR’s RTDE interface to send the Cartesian velocity directly.
+
+# The point here is concept demonstration of visual servoing flow, not perfect motion accuracy.
+
+
+    global current_pos
+    if current_pos is None:
+        print("[WARN] No current joint state yet.")
+        return
+
+    # Just map linear x,y,z to first three joints as a rough example
+    joint_positions = np.array(current_pos)
+    joint_positions[:3] += scale * np.array(velocity[:3]).flatten()
+
+    joint_names = [
+        'shoulder_pan_joint',
+        'shoulder_lift_joint',
+        'elbow_joint',
+        'wrist_1_joint',
+        'wrist_2_joint',
+        'wrist_3_joint'
+    ]
+
+    traj_msg = {
+        'joint_names': joint_names,
+        'points': [{
+            'positions': joint_positions.tolist(),
+            'time_from_start': {'secs': int(duration), 'nsecs': int((duration - int(duration)) * 1e9)}
+        }]
+    }
+
+    #The control command is published to the below joint trajectory controller topic in ROS
+    topic = roslibpy.Topic(client, '/ur/scaled_pos_joint_traj_controller/command', 'trajectory_msgs/JointTrajectory')
+    topic.advertise()
+    topic.publish(roslibpy.Message(traj_msg))
+    topic.unadvertise()
+
+
+# ------------------------- MAIN LOOP ------------------------- #
+
+if __name__ == '__main__':
+    client = roslibpy.Ros(host='192.168.27.1', port=9090)
+    client.run()
+
+    #Robot's state subscriber
+    listener = roslibpy.Topic(client, '/ur/joint_states', 'sensor_msgs/JointState')
+    listener.subscribe(joint_state_cb)
+
+    print("[APP] Starting visual servoing control loop... Press Ctrl+C to stop.")
+    time.sleep(2.0)
+
+    try:
+        while True: #Finds/Detects the checkerboard
+            frames = pipeline.wait_for_frames()
+            color_frame = frames.get_color_frame()
+            if not color_frame:
+                continue
+
+            color = np.asanyarray(color_frame.get_data())
+            gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+            ret, corners = cv2.findChessboardCorners(
+                gray, PATTERN_SIZE,
+                flags=cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+            )
+
+            if not ret or corners is None:
+                print("[CAMERA] Checkerboard not found.")
+                continue
+
+
+            # Refine corner locations
+            cv2.cornerSubPix(gray, corners, (5,5), (-1,-1),
+                (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-3))
+
+            uv = corners.reshape(-1, 2) # Pixel coordinates of detected corners
+            # x = u-cx/fx, y = v-cy/fy
+            x = (uv[:, 0] - cx) / fx
+            y = (uv[:, 1] - cy) / fy
+            #Convert from pixel space to normalised camera coordinates seen next lien
+            obs_norm = np.column_stack((x, y)) # Normalised observed feature coordinates
+
+            # Visual servoing control law
+            e2 = obs_norm[:3, :] - target_norm #e = s - s*
+            e = e2.T.reshape(-1, 1, order='F') # Feature error vector
+            Lx_pinv = np.linalg.pinv(Lx)
+            Vc = -Lambda * (Lx_pinv @ e) # Vc = -lambda * Lx+ * e 
+            #Vc is 6x1 velocity command for the camera frame
+            #The - ensures the robot moves to reduce the error
+
+            print(f"[CTRL] Velocity command: {Vc.T}")
+
+            send_velocity_step(client, Vc, duration=0.1)
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("\n[APP] Stopped by user.")
+    finally:
+        listener.unsubscribe()
+        pipeline.stop()
+        client.terminate()
+        print("[APP] Shutdown complete.")
