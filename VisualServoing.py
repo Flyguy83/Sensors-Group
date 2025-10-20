@@ -25,11 +25,11 @@ Z = 50
 Lambda = 0.5
 
 Target = np.array([
-    [0.0,   0.0],
-    [800.0, 0.0],
-    [0.0, 800.0],
-    [0.00,0.00]
-], dtype=float) # Four corners for simplicity?
+    [444.16614,  127.190315],
+    [451.59695,  358.1429],
+    [250.18605,  357.43393],
+    [210.23355,  357.4991]
+    ], dtype=float) # Four corners for simplicity?
 
 PATTERN_SIZE = (7, 7)  # (cols, rows)
 PATTERN_INDEX = (0,6,41,48) # Indexes of top corners based on pattern size
@@ -75,7 +75,6 @@ while(1):
         )
 
         edge_corners = np.array([corners[idx, 0, :] for idx in PATTERN_INDEX])
-
 
         # Normalize pixel coordinates in image frame with camera intrinsics
         x = (edge_corners[:, 0] - cx) / fx
