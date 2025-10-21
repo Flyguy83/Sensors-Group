@@ -29,12 +29,14 @@ Z = 50.0 #Assumed constant depth of the target points in mm
 Lambda = 0.5 # Visual servoing gain
 
 Target = np.array([
-    [0.0,   0.0],
-    [800.0, 0.0],
-    [0.0, 800.0]
-], dtype=float)
+    [444.16614,  127.190315],
+    [451.59695,  358.1429],
+    [250.18605,  357.43393],
+    [210.23355,  357.4991]
+    ], dtype=float) # Four corners for simplicity?
 
-PATTERN_SIZE = (9, 6) # (cols, rows)
+PATTERN_SIZE = (7, 7) # (cols, rows)
+PATTERN_INDEX = (0,6,41,48) # Indexes of top corners based on pattern size
 
 RESOLUTION = (640, 480)
 FPS = 30
@@ -50,11 +52,11 @@ color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile()
 intr = color_stream.get_intrinsics()
 fx, fy, cx, cy = intr.fx, intr.fy, intr.ppx, intr.ppy
 
-target_norm = np.empty((3, 2), float)
+target_norm = np.empty((4, 2), float)
 target_norm[:, 0] = (Target[:, 0] - cx) / fx
 target_norm[:, 1] = (Target[:, 1] - cy) / fy #Normalised target feature coordinates
 
-Lx = np.vstack([FuncLx(target_norm[i, 0], target_norm[i, 1], Z) for i in range(3)])
+Lx = np.vstack([FuncLx(target_norm[i, 0], target_norm[i, 1], Z) for i in range(4)])
 
 
 # ------------------------- ROS + ROBOT CONTROL SETUP ------------------------- #
@@ -132,6 +134,7 @@ if __name__ == '__main__':
             frames = pipeline.wait_for_frames()
             color_frame = frames.get_color_frame()
             if not color_frame:
+                raise RuntimeError('No colour frames received')
                 continue
 
             color = np.asanyarray(color_frame.get_data())
@@ -150,16 +153,17 @@ if __name__ == '__main__':
             cv2.cornerSubPix(gray, corners, (5,5), (-1,-1),
                 (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-3))
 
-            uv = corners.reshape(-1, 2) # Pixel coordinates of detected corners
-            # x = u-cx/fx, y = v-cy/fy
-            x = (uv[:, 0] - cx) / fx
-            y = (uv[:, 1] - cy) / fy
-            #Convert from pixel space to normalised camera coordinates seen next lien
-            obs_norm = np.column_stack((x, y)) # Normalised observed feature coordinates
+            edge_corners = np.array([corners[idx, 0, :] for idx in PATTERN_INDEX])
+            
+            # Normalise pixel coordinates in image frame with camera intrinsics
+            x = (edge_corners[:, 0] - cx) / fx
+            y = (edge_corners[:, 1] - cy) / fy
+            obs_norm = np.column_stack((x, y))
 
             # Visual servoing control law
-            e2 = obs_norm[:3, :] - target_norm #e = s - s*
-            e = e2.T.reshape(-1, 1, order='F') # Feature error vector
+            e2 = obs_norm - target_norm 
+            e = e2.T.reshape(-1, 1, order='F')  
+        
             Lx_pinv = np.linalg.pinv(Lx)
             Vc = -Lambda * (Lx_pinv @ e) # Vc = -lambda * Lx+ * e 
             #Vc is 6x1 velocity command for the camera frame
