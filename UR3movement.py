@@ -21,10 +21,10 @@ def call_service(client, service_name):
 
 def move_ur_joint_positions(client,joint_positions, duration=5.0):
     global current_pos
-    # client = roslibpy.Ros(host='192.168.27.1', port=9090)  # Replace with your ROS bridge IP
+    client = roslibpy.Ros(host='192.168.27.1', port=9090)  # Replace with your ROS bridge IP
 
     try:
-        # client.run()
+        client.run()
 
         # Subscribe to joint states to get the current position
         listener = roslibpy.Topic(client, '/joint_states', 'sensor_msgs/JointState')

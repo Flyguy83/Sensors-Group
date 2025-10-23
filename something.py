@@ -7,7 +7,6 @@ import roslibpy
 import roboticstoolbox as rtb
 from roboticstoolbox import models
 from spatialmath import SE3
-from rtde_control import RTDEControlInterface
 
 # ------------------------- CAMERA + VISUAL SERVOING SETUP ------------------------- #
 
@@ -30,9 +29,9 @@ def FuncLx(x, y, Z): #Computing the Image Jacobian for one image point
     return Lx
 
 Z = 0.4 #Assumed constant depth of the target points in m
-Lambda = 0.5 # Visual servoing gain
+Lambda = 0.001 # Visual servoing gain
 
-r = models.DH.UR3e()
+r = models.DH.UR3()
 
 Target = np.array([
     [444.16614,  127.190315],
@@ -62,8 +61,6 @@ target_norm = np.empty((4, 2), float)
 target_norm[:, 0] = (Target[:, 0] - cx) / fx
 target_norm[:, 1] = (Target[:, 1] - cy) / fy #Normalised target feature coordinates
 
-Lx = np.vstack([FuncLx(target_norm[i, 0], target_norm[i, 1], Z) for i in range(4)])
-
 # ------------------------- ROS + ROBOT CONTROL SETUP ------------------------- #
 
 current_pos = None
@@ -76,10 +73,10 @@ def joint_state_cb(message):
 
 def move_ur_joint_positions(client,joint_positions, duration=5.0):
     global current_pos
-    # client = roslibpy.Ros(host='192.168.27.1', port=9090)  # Replace with your ROS bridge IP
+    client = roslibpy.Ros(host='192.168.27.1', port=9090)  # Replace with your ROS bridge IP
 
     try:
-        # client.run()
+        client.run()
 
         # Subscribe to joint states to get the current position
         listener = roslibpy.Topic(client, '/joint_states', 'sensor_msgs/JointState')
@@ -152,11 +149,14 @@ if __name__ == '__main__':
     client.run()
 
     #Robot's state subscriber
-    listener = roslibpy.Topic(client, '/ur/joint_states', 'sensor_msgs/JointState')
+    listener = roslibpy.Topic(client, 'ur/joint_states', 'sensor_msgs/JointState')
     listener.subscribe(joint_state_cb)
+
 
     print("[APP] Starting visual servoing control loop... Press Ctrl+C to stop.")
     time.sleep(2.0)
+
+    current_pos = np.empty((1,6), float)
 
     try:
         while True: #Finds/Detects the checkerboard
@@ -189,23 +189,34 @@ if __name__ == '__main__':
             y = (edge_corners[:, 1] - cy) / fy
             obs_norm = np.column_stack((x, y))
 
+            Lx = np.vstack([FuncLx(obs_norm[i, 0], obs_norm[i, 1], Z) for i in range(4)])
+
             # Visual servoing control law
             e2 = obs_norm - target_norm 
             e = e2.T.reshape(-1, 1, order='F')  
         
             Lx_pinv = np.linalg.pinv(Lx)
             Vc = -Lambda * (Lx_pinv @ e) 
+            # Vc[1], Vc[2] = Vc[2], Vc[1]
+            # Vc[4], Vc[5] = Vc[5], Vc[4]
+            print(Vc)
             # Vc = -lambda * Lx+ * e 
             #Vc is 6x1 velocity command for the camera frame
             #The - ensures the robot moves to reduce the error
-
-            r.q = current_pos
+            
             J2 = r.jacobe(current_pos)
             Jinv = np.linalg.pinv(J2)
-            qp = Jinv @ Vc
 
-            goal_pos = current_pos+qp
-            
+            # Joint velocity
+            qp = (np.linalg.pinv(J2) @ Vc).reshape(6,)   
+
+            dt = 0.01
+            goal_pos = (current_pos+qp * dt)
+            goal_pos_list = goal_pos.tolist()
+            print(goal_pos_list)
+
+            move_ur_joint_positions(client,goal_pos_list)
+
             print(f"[CTRL] Velocity command: {Vc.T}")
 
     except KeyboardInterrupt:
