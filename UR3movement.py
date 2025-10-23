@@ -100,8 +100,8 @@ if __name__ == '__main__':
         move_ur_joint_positions(client, position_1, duration=5.0)
 
         # Open gripper after first move
-        call_service(client, '/onrobot/close')
-        time.sleep(2.0)  # Optional pause between moves
+        # call_service(client, '/onrobot/close')
+        # time.sleep(2.0)  # Optional pause between moves
 
         # Second move
         position_2 = [1.21242094039917, -1.4333710980466385, 0.7061713377581995, -1.7556292019286097, -1.527926270161764, 0.009298055432736874]
@@ -111,9 +111,9 @@ if __name__ == '__main__':
         position_3 = [1.7473816871643066, -0.9613179129413147, 0.8758967558490198, -1.5557692807963868, -1.5483344236956995, 0.009369985200464725]
         move_ur_joint_positions(client,position_3, duration=5.0)
 
-        # Close gripper after second move
-        call_service(client, '/onrobot/open')
-        time.sleep(2.0)
+        # # Close gripper after second move
+        # call_service(client, '/onrobot/open')
+        # time.sleep(2.0)
 
     except KeyboardInterrupt:
         print("\n[APP] Interrupted by user.")
