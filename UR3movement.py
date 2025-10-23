@@ -27,7 +27,7 @@ def move_ur_joint_positions(client,joint_positions, duration=5.0):
         # client.run()
 
         # Subscribe to joint states to get the current position
-        listener = roslibpy.Topic(client, '/ur/joint_states', 'sensor_msgs/JointState')
+        listener = roslibpy.Topic(client, '/joint_states', 'sensor_msgs/JointState')
         listener.subscribe(joint_state_cb)
 
         # Wait until we receive a joint state
@@ -36,7 +36,7 @@ def move_ur_joint_positions(client,joint_positions, duration=5.0):
         while current_pos is None and time.time() - start_time < 5.0:
             time.sleep(0.05)
         if current_pos is None:
-            raise RuntimeError("No joint state received from /ur/joint_states")
+            raise RuntimeError("No joint state received from /joint_states")
 
         print(f"[ROS] Current joint positions: {current_pos}")
 
@@ -70,7 +70,7 @@ def move_ur_joint_positions(client,joint_positions, duration=5.0):
         # Publish to the controller's /command topic
         topic = roslibpy.Topic(
             client,
-            '/ur/scaled_pos_joint_traj_controller/command',
+            '/scaled_pos_joint_traj_controller/command',
             'trajectory_msgs/JointTrajectory'
         )
         topic.advertise()
