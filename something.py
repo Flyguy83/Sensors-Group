@@ -29,7 +29,7 @@ def FuncLx(x, y, Z): #Computing the Image Jacobian for one image point
     return Lx
 
 Z = 0.4 #Assumed constant depth of the target points in m
-Lambda = 0.001 # Visual servoing gain
+Lambda = 0.1 # Visual servoing gain
 
 r = models.DH.UR3()
 
@@ -39,6 +39,7 @@ Target = np.array([
     [250.18605,  357.43393],
     [210.23355,  357.4991]
     ], dtype=float) # Four corners for simplicity?
+Target = Target/2
 
 PATTERN_SIZE = (7, 7) # (cols, rows)
 PATTERN_INDEX = (0,6,41,48) # Indexes of top corners based on pattern size
@@ -71,7 +72,7 @@ def joint_state_cb(message):
 
 # ------------------------- MAIN LOOP ------------------------- #
 
-def move_ur_joint_positions(client,joint_positions, duration=5.0):
+def move_ur_joint_positions(client,joint_positions, duration=0.5):
     global current_pos
     client = roslibpy.Ros(host='192.168.27.1', port=9090)  # Replace with your ROS bridge IP
 
@@ -130,7 +131,7 @@ def move_ur_joint_positions(client,joint_positions, duration=5.0):
         print("[ROS] Trajectory published.")
 
         # Wait for motion to complete
-        time.sleep(duration + 1.0)
+        time.sleep(duration+0.1)
 
         topic.unadvertise()
 
@@ -149,7 +150,7 @@ if __name__ == '__main__':
     client.run()
 
     #Robot's state subscriber
-    listener = roslibpy.Topic(client, 'ur/joint_states', 'sensor_msgs/JointState')
+    listener = roslibpy.Topic(client, '/joint_states', 'sensor_msgs/JointState')
     listener.subscribe(joint_state_cb)
 
 
@@ -189,16 +190,18 @@ if __name__ == '__main__':
             y = (edge_corners[:, 1] - cy) / fy
             obs_norm = np.column_stack((x, y))
 
+            print(x)
+            print(y)
+
             Lx = np.vstack([FuncLx(obs_norm[i, 0], obs_norm[i, 1], Z) for i in range(4)])
 
             # Visual servoing control law
             e2 = obs_norm - target_norm 
-            e = e2.T.reshape(-1, 1, order='F')  
+            e = e2.reshape(-1, 1, order='C')  
         
             Lx_pinv = np.linalg.pinv(Lx)
-            Vc = -Lambda * (Lx_pinv @ e) 
-            # Vc[1], Vc[2] = Vc[2], Vc[1]
-            # Vc[4], Vc[5] = Vc[5], Vc[4]
+            Vc = Lambda * (Lx_pinv @ e) 
+
             print(Vc)
             # Vc = -lambda * Lx+ * e 
             #Vc is 6x1 velocity command for the camera frame
@@ -210,7 +213,7 @@ if __name__ == '__main__':
             # Joint velocity
             qp = (np.linalg.pinv(J2) @ Vc).reshape(6,)   
 
-            dt = 0.01
+            dt = 0.1
             goal_pos = (current_pos+qp * dt)
             goal_pos_list = goal_pos.tolist()
             print(goal_pos_list)
