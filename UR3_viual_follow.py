@@ -4,6 +4,9 @@ import numpy as np
 import cv2
 import pyrealsense2 as rs
 import roslibpy
+import roboticstoolbox as rtb
+from roboticstoolbox import models
+from spatialmath import SE3
 
 # ------------------------- CAMERA + VISUAL SERVOING SETUP ------------------------- #
 
@@ -25,18 +28,20 @@ def FuncLx(x, y, Z): #Computing the Image Jacobian for one image point
     Lx[1, 5] = -x
     return Lx
 
-Z = 50.0 #Assumed constant depth of the target points in mm
-Lambda = 0.5 # Visual servoing gain
+Z = 0.8 #Assumed constant depth of the target points in m
+Lambda = 0.1 # Visual servoing gain
+
+r = models.DH.UR3()
 
 Target = np.array([
-    [444.16614,  127.190315],
-    [451.59695,  358.1429],
-    [250.18605,  357.43393],
-    [210.23355,  357.4991]
-    ], dtype=float) # Four corners for simplicity?
+    [220.0,340.0],
+    [420.0,340.0],
+    [220.0,140.0],
+    [420.0,140.0]
+    ], dtype=float) # Four corners for simplicity
 
-PATTERN_SIZE = (7, 7) # (cols, rows)
-PATTERN_INDEX = (0,6,41,48) # Indexes of top corners based on pattern size
+PATTERN_SIZE = (7, 7) # (cols, rows) excluding edge corners for better results
+PATTERN_INDEX = (0,6,42,48) # Indexes of outer corners based on pattern size
 
 RESOLUTION = (640, 480)
 FPS = 30
@@ -56,9 +61,6 @@ target_norm = np.empty((4, 2), float)
 target_norm[:, 0] = (Target[:, 0] - cx) / fx
 target_norm[:, 1] = (Target[:, 1] - cy) / fy #Normalised target feature coordinates
 
-Lx = np.vstack([FuncLx(target_norm[i, 0], target_norm[i, 1], Z) for i in range(4)])
-
-
 # ------------------------- ROS + ROBOT CONTROL SETUP ------------------------- #
 
 current_pos = None
@@ -67,67 +69,94 @@ def joint_state_cb(message):
     global current_pos
     current_pos = list(message['position'])
 
-def send_velocity_step(client, velocity, duration=0.1, scale=0.01):
-    """
-    Convert 6x1 Cartesian velocity command into a small joint motion.
-    (Simplified for demo — uses proportional scaling.)
-    """
-
-# This is simplified — it just maps vx, vy, vz linearly to joint 1–3 positions.
-# In a real system, you’d either:
-
-# - Use inverse kinematics, or
-
-# - Use UR’s RTDE interface to send the Cartesian velocity directly.
-
-# The point here is concept demonstration of visual servoing flow, not perfect motion accuracy.
-
-
-    global current_pos
-    if current_pos is None:
-        print("[WARN] No current joint state yet.")
-        return
-
-    # Just map linear x,y,z to first three joints as a rough example
-    joint_positions = np.array(current_pos)
-    joint_positions[:3] += scale * np.array(velocity[:3]).flatten()
-
-    joint_names = [
-        'shoulder_pan_joint',
-        'shoulder_lift_joint',
-        'elbow_joint',
-        'wrist_1_joint',
-        'wrist_2_joint',
-        'wrist_3_joint'
-    ]
-
-    traj_msg = {
-        'joint_names': joint_names,
-        'points': [{
-            'positions': joint_positions.tolist(),
-            'time_from_start': {'secs': int(duration), 'nsecs': int((duration - int(duration)) * 1e9)}
-        }]
-    }
-
-    #The control command is published to the below joint trajectory controller topic in ROS
-    topic = roslibpy.Topic(client, '/ur/scaled_pos_joint_traj_controller/command', 'trajectory_msgs/JointTrajectory')
-    topic.advertise()
-    topic.publish(roslibpy.Message(traj_msg))
-    topic.unadvertise()
-
-
 # ------------------------- MAIN LOOP ------------------------- #
+
+def move_ur_joint_positions(client,joint_positions, duration=0.5):
+    global current_pos
+    client = roslibpy.Ros(host='192.168.27.1', port=9090)  # Replace with your ROS bridge IP
+
+    try:
+        client.run()
+
+        # Subscribe to joint states to get the current position
+        listener = roslibpy.Topic(client, '/joint_states', 'sensor_msgs/JointState')
+        listener.subscribe(joint_state_cb)
+
+        # Wait until we receive a joint state
+        print("[ROS] Waiting for current joint state...")
+        start_time = time.time()
+        while current_pos is None and time.time() - start_time < 5.0:
+            time.sleep(0.05)
+        if current_pos is None:
+            raise RuntimeError("No joint state received from /joint_states")
+
+        print(f"[ROS] Current joint positions: {current_pos}")
+
+        # Build a JointTrajectory message for the scaled_pos_joint_traj_controller
+        joint_names = [
+            'shoulder_pan_joint',
+            'shoulder_lift_joint',
+            'elbow_joint',
+            'wrist_1_joint',
+            'wrist_2_joint',
+            'wrist_3_joint'
+        ]
+
+        trajectory_msg = {
+            'joint_names': joint_names,
+            'points': [
+                {
+                    'positions': current_pos,
+                    'time_from_start': {'secs': 0, 'nsecs': 0}
+                },
+                {
+                    'positions': joint_positions, #First Position
+                    'time_from_start': {
+                        'secs': int(duration),
+                        'nsecs': int((duration - int(duration)) * 1e9)
+                    }
+                }
+            ]
+        }
+
+        # Publish to the controller's /command topic
+        topic = roslibpy.Topic(
+            client,
+            '/scaled_pos_joint_traj_controller/command',
+            'trajectory_msgs/JointTrajectory'
+        )
+        topic.advertise()
+        topic.publish(roslibpy.Message(trajectory_msg))
+        print("[ROS] Trajectory published.")
+
+        # Wait for motion to complete
+        time.sleep(duration+0.1)
+
+        topic.unadvertise()
+
+
+        
+        listener.unsubscribe()
+
+    finally:
+        pass
+        # client.terminate()
+        # print("[ROS] Disconnected from rosbridge.")
+
 
 if __name__ == '__main__':
     client = roslibpy.Ros(host='192.168.27.1', port=9090)
     client.run()
 
     #Robot's state subscriber
-    listener = roslibpy.Topic(client, '/ur/joint_states', 'sensor_msgs/JointState')
+    listener = roslibpy.Topic(client, '/joint_states', 'sensor_msgs/JointState')
     listener.subscribe(joint_state_cb)
+
 
     print("[APP] Starting visual servoing control loop... Press Ctrl+C to stop.")
     time.sleep(2.0)
+
+    current_pos = np.empty((1,6), float)
 
     try:
         while True: #Finds/Detects the checkerboard
@@ -136,6 +165,10 @@ if __name__ == '__main__':
             if not color_frame:
                 raise RuntimeError('No colour frames received')
                 continue
+
+            # Opens window to stream realsense camera frames for visual checkerboard adjustment and testing
+            color_image = np.asanyarray(color_frame.get_data())
+            cv2.imshow("Stream", color_frame)
 
             color = np.asanyarray(color_frame.get_data())
             gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
@@ -153,6 +186,7 @@ if __name__ == '__main__':
             cv2.cornerSubPix(gray, corners, (5,5), (-1,-1),
                 (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-3))
 
+            # Extracts 4 outermost corners to reduce computational load
             edge_corners = np.array([corners[idx, 0, :] for idx in PATTERN_INDEX])
             
             # Normalise pixel coordinates in image frame with camera intrinsics
@@ -160,19 +194,32 @@ if __name__ == '__main__':
             y = (edge_corners[:, 1] - cy) / fy
             obs_norm = np.column_stack((x, y))
 
+            Lx = np.vstack([FuncLx(obs_norm[i, 0], obs_norm[i, 1], Z) for i in range(4)])
+
             # Visual servoing control law
             e2 = obs_norm - target_norm 
-            e = e2.T.reshape(-1, 1, order='F')  
+            e = e2.reshape(-1, 1, order='C')  
         
             Lx_pinv = np.linalg.pinv(Lx)
-            Vc = -Lambda * (Lx_pinv @ e) # Vc = -lambda * Lx+ * e 
+            Vc = Lambda * (Lx_pinv @ e) 
+
+            # Vc = -lambda * Lx+ * e 
             #Vc is 6x1 velocity command for the camera frame
             #The - ensures the robot moves to reduce the error
+            
+            J2 = r.jacobe(current_pos)
+            Jinv = np.linalg.pinv(J2)
+
+            # Joint velocity
+            qp = (np.linalg.pinv(J2) @ Vc).reshape(6,)   
+
+            dt = 0.1 # Used to integrate qdot for controlled movement
+            goal_pos = (current_pos+qp * dt)
+            goal_pos_list = goal_pos.tolist()
+
+            move_ur_joint_positions(client,goal_pos_list)
 
             print(f"[CTRL] Velocity command: {Vc.T}")
-
-            send_velocity_step(client, Vc, duration=0.1)
-            time.sleep(0.1)
 
     except KeyboardInterrupt:
         print("\n[APP] Stopped by user.")
