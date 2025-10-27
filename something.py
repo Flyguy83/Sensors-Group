@@ -28,21 +28,20 @@ def FuncLx(x, y, Z): #Computing the Image Jacobian for one image point
     Lx[1, 5] = -x
     return Lx
 
-Z = 0.4 #Assumed constant depth of the target points in m
+Z = 0.8 #Assumed constant depth of the target points in m
 Lambda = 0.1 # Visual servoing gain
 
 r = models.DH.UR3()
 
 Target = np.array([
-    [444.16614,  127.190315],
-    [451.59695,  358.1429],
-    [250.18605,  357.43393],
-    [210.23355,  357.4991]
+    [220.0,340.0],
+    [420.0,340.0],
+    [220.0,140.0],
+    [420.0,140.0]
     ], dtype=float) # Four corners for simplicity?
-Target = Target/2
 
 PATTERN_SIZE = (7, 7) # (cols, rows)
-PATTERN_INDEX = (0,6,41,48) # Indexes of top corners based on pattern size
+PATTERN_INDEX = (0,6,42,48) # Indexes of outer corners based on pattern size
 
 RESOLUTION = (640, 480)
 FPS = 30
@@ -167,6 +166,10 @@ if __name__ == '__main__':
                 raise RuntimeError('No colour frames received')
                 continue
 
+            # Opens window to stream realsense camera frames for visual checkerboard adjustment and testing
+            color_image = np.asanyarray(color_frame.get_data())
+            cv2.imshow("Stream", color_frame)
+
             color = np.asanyarray(color_frame.get_data())
             gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
             ret, corners = cv2.findChessboardCorners(
@@ -183,15 +186,13 @@ if __name__ == '__main__':
             cv2.cornerSubPix(gray, corners, (5,5), (-1,-1),
                 (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-3))
 
+            # Extracts 4 outermost corners to reduce computational load
             edge_corners = np.array([corners[idx, 0, :] for idx in PATTERN_INDEX])
             
             # Normalise pixel coordinates in image frame with camera intrinsics
             x = (edge_corners[:, 0] - cx) / fx
             y = (edge_corners[:, 1] - cy) / fy
             obs_norm = np.column_stack((x, y))
-
-            print(x)
-            print(y)
 
             Lx = np.vstack([FuncLx(obs_norm[i, 0], obs_norm[i, 1], Z) for i in range(4)])
 
